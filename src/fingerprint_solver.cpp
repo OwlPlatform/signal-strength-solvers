@@ -119,11 +119,11 @@ int main(int ac, char** av) {
   }
 
   //Grab the ip and ports for the servers and aggregator
-  std::vector<NetTarget> servers;
+  std::vector<SolverAggregator::NetTarget> servers;
   for (int s_num = 1; s_num < ac - 4; s_num += 2) {
     std::string server_ip(av[s_num]);
     uint16_t server_port = std::stoi(std::string((av[s_num + 1])));
-    servers.push_back(NetTarget{server_ip, server_port});
+    servers.push_back(SolverAggregator::NetTarget{server_ip, server_port});
   }
   //World model IP and port
   std::string wm_ip(av[ac-4]);
@@ -164,7 +164,7 @@ int main(int ac, char** av) {
   everything_rule.update_interval = time_interval / 2.0;
   auto packet_callback = [&](SampleData& s) { storeLinkRSS(s, signals, std::ref(signal_mutex));};
   SolverAggregator aggregator(servers, packet_callback);
-  aggregator.updateRules(everything_rule);
+  aggregator.updateRules(aggregator_solver::Subscription{everything_rule});
 
   //Now process signal values into variance every time_interval milliseconds
   grail_time last_time = world_model::getGRAILTime();
@@ -186,7 +186,7 @@ int main(int ac, char** av) {
     //Get the variance for each transmitter/receiver link and store them by transmitter
     map<UniqueTxer, vector<double>> txer_variances;
     //Store link variances while doing this
-    vector<SolverWorldModel::Solution> solns;
+    vector<SolverWorldModel::AttrUpdate> solns;
     {
       std::unique_lock<std::mutex> lck(signal_mutex);
       for (auto I = signals.begin(); I != signals.end() ; ++I) {
@@ -205,14 +205,14 @@ int main(int ac, char** av) {
               [&](double a, Signal b){return a + pow(avg - b.second, 2.0);});
           double variance = ssquares / (dq.size() - 1);
           {
-            SolverWorldModel::Solution soln{u"link variance", last_time, linkToUString(link), vector<uint8_t>()};
+            SolverWorldModel::AttrUpdate soln{u"link variance", last_time, linkToUString(link), vector<uint8_t>()};
             pushBackVal(variance, soln.data);
             solns.push_back(soln);
             txer_variances[ut].push_back(variance);
           }
           //Make a link average solution
           {
-            SolverWorldModel::Solution avg_soln{u"link average", last_time, linkToUString(link), vector<uint8_t>()};
+            SolverWorldModel::AttrUpdate avg_soln{u"link average", last_time, linkToUString(link), vector<uint8_t>()};
             pushBackVal(avg, avg_soln.data);
             solns.push_back(avg_soln);
           }
@@ -225,7 +225,7 @@ int main(int ac, char** av) {
             if (rss_vals.size() % 2 == 0) {
               median = (median + rss_vals[1 + rss_vals.size()/2])/ 2.0;
             }
-            SolverWorldModel::Solution median_soln{u"link median", last_time, linkToUString(link), vector<uint8_t>()};
+            SolverWorldModel::AttrUpdate median_soln{u"link median", last_time, linkToUString(link), vector<uint8_t>()};
             pushBackVal(median, median_soln.data);
             solns.push_back(median_soln);
           }
@@ -236,7 +236,7 @@ int main(int ac, char** av) {
     //into solution types.
     for (auto I = txer_variances.begin(); I != txer_variances.end(); ++I) {
       UniqueTxer ut = I->first;
-      SolverWorldModel::Solution soln{u"average variance", last_time, txerToUString(ut), vector<uint8_t>()};
+      SolverWorldModel::AttrUpdate soln{u"average variance", last_time, txerToUString(ut), vector<uint8_t>()};
       double avg = getAverage(I->second);
       pushBackVal(avg, soln.data);
       solns.push_back(soln);
