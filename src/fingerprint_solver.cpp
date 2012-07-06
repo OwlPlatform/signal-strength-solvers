@@ -136,8 +136,8 @@ int main(int ac, char** av) {
 
 
   //Set up the solver world model connection;
-  std::string origin = "grail/fingerprint_solver\nversion 1.0\ntime interval "+
-    std::to_string(time_interval)+"\nwindow size "+std::to_string(window_size);
+  std::string origin = "fingerprint_solver (time interval "+
+    std::to_string(time_interval)+", window size "+std::to_string(window_size)+")";
   //Provide variance as a transient type
   //Link variance is between a transmitter and a receiver.
   //Average variance is the average of all link variances for a transmitter
