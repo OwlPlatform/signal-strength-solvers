@@ -6,3 +6,13 @@ add_executable (fingerprint_solver ${FingerSources})
 target_link_libraries (fingerprint_solver owl owl-solver pthread)
 
 INSTALL(TARGETS fingerprint_solver RUNTIME DESTINATION bin/owl)
+
+
+SET(MobilitySources
+  mobility_solver.cpp
+)
+
+add_executable (mobility_solver ${MobilitySources})
+target_link_libraries (mobility_solver owl owl-solver pthread)
+
+INSTALL(TARGETS mobility_solver RUNTIME DESTINATION bin/owl)
