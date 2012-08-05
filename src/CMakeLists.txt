@@ -16,3 +16,13 @@ add_executable (mobility_solver ${MobilitySources})
 target_link_libraries (mobility_solver owl owl-solver pthread)
 
 INSTALL(TARGETS mobility_solver RUNTIME DESTINATION bin/owl)
+
+
+SET(EvaluatorSources
+  localization_evaluator.cpp
+)
+
+add_executable (localization_evaluator ${EvaluatorSources})
+target_link_libraries (localization_evaluator owl owl-solver pthread)
+
+INSTALL(TARGETS localization_evaluator RUNTIME DESTINATION bin/owl)
