@@ -151,7 +151,7 @@ int main(int ac, char** av) {
     return 0;
   }
 
-  //Create a place to store signal values
+  //Create a place to store signal values received from the aggregator
   map<Link, deque<Signal>> signals;
   //We will run the aggregator connection in another thread so we
   //need a mutex to control access to the signals map.
@@ -190,10 +190,11 @@ int main(int ac, char** av) {
     {
       std::unique_lock<std::mutex> lck(signal_mutex);
       for (auto I = signals.begin(); I != signals.end() ; ++I) {
+        //Process all of the signals from this link
         UniqueTxer ut{std::get<0>(I->first), std::get<1>(I->first)};
         Link link = I->first;
         deque<Signal>& dq = I->second;
-        //Remove data that is too old.
+        //Remove data that is too old. This also stops the dequeue from growing too large
         while (not dq.empty() and dq.front().first < cutoff_time) {
           dq.pop_front();
         }
