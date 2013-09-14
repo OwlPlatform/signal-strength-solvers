@@ -198,39 +198,42 @@ int main(int ac, char** av) {
         while (not dq.empty() and dq.front().first < cutoff_time) {
           dq.pop_front();
         }
-        //Find the variances and store it if there were enough samples.
-        if (3 <= dq.size()) {
-          double avg = std::accumulate(dq.begin(), dq.end(), 0.0,
-              [&](double a, Signal b){return a + (b.second/dq.size());});
-          double ssquares = std::accumulate(dq.begin(), dq.end(), 0.0,
-              [&](double a, Signal b){return a + pow(avg - b.second, 2.0);});
-          double variance = ssquares / (dq.size() - 1);
-          {
-            SolverWorldModel::AttrUpdate soln{u"link variance", last_time, linkToUString(link), vector<uint8_t>()};
-            pushBackVal(variance, soln.data);
-            solns.push_back(soln);
-            txer_variances[ut].push_back(variance);
-          }
-          //Make a link average solution
-          {
-            SolverWorldModel::AttrUpdate avg_soln{u"link average", last_time, linkToUString(link), vector<uint8_t>()};
-            pushBackVal(avg, avg_soln.data);
-            solns.push_back(avg_soln);
-          }
-          {
-            //Make a link median solution
-            std::vector<float> rss_vals(dq.size());
-            std::transform(dq.begin(), dq.end(), rss_vals.begin(), [&](const Signal& s){return s.second;});
-            std::sort(rss_vals.begin(), rss_vals.end());
-            double median = rss_vals[rss_vals.size() / 2];
-            if (rss_vals.size() % 2 == 0) {
-              median = (median + rss_vals[1 + rss_vals.size()/2])/ 2.0;
-            }
-            SolverWorldModel::AttrUpdate median_soln{u"link median", last_time, linkToUString(link), vector<uint8_t>()};
-            pushBackVal(median, median_soln.data);
-            solns.push_back(median_soln);
-          }
-        }
+        //Find the signal statistics and store them if there are enough samples.
+				//At least 1 sample to find a median and average.
+				if (1 <= dq.size()) {
+					double avg = std::accumulate(dq.begin(), dq.end(), 0.0,
+							[&](double a, Signal b){return a + (b.second/dq.size());});
+					//Make a link average solution
+					{
+						SolverWorldModel::AttrUpdate avg_soln{u"link average", last_time, linkToUString(link), vector<uint8_t>()};
+						pushBackVal(avg, avg_soln.data);
+						solns.push_back(avg_soln);
+					}
+					//Make a link median solution
+					{
+						std::vector<float> rss_vals(dq.size());
+						std::transform(dq.begin(), dq.end(), rss_vals.begin(), [&](const Signal& s){return s.second;});
+						std::sort(rss_vals.begin(), rss_vals.end());
+						double median = rss_vals[rss_vals.size() / 2];
+						if (rss_vals.size() % 2 == 0) {
+							median = (median + rss_vals[1 + rss_vals.size()/2])/ 2.0;
+						}
+						SolverWorldModel::AttrUpdate median_soln{u"link median", last_time, linkToUString(link), vector<uint8_t>()};
+						pushBackVal(median, median_soln.data);
+						solns.push_back(median_soln);
+					}
+					if (3 <= dq.size()) {
+						double ssquares = std::accumulate(dq.begin(), dq.end(), 0.0,
+								[&](double a, Signal b){return a + pow(avg - b.second, 2.0);});
+						double variance = ssquares / (dq.size() - 1);
+						{
+							SolverWorldModel::AttrUpdate soln{u"link variance", last_time, linkToUString(link), vector<uint8_t>()};
+							pushBackVal(variance, soln.data);
+							solns.push_back(soln);
+							txer_variances[ut].push_back(variance);
+						}
+					}
+				}
       }
     }
     //Now average the variances for each transmitter and turn the values
