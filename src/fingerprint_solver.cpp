@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <queue>
 #include <deque>
 #include <functional>
 #include <map>
@@ -80,16 +81,23 @@ std::u16string txerToUString(UniqueTxer& ut) {
 
 
 ///Store a link's RSS in the signal map
-void storeLinkRSS(SampleData& sample, map<Link, deque<Signal>>& signals, std::mutex& m) {
-  if (sample.valid) {
-    //Lock the mutex to gain control of the signals map
-    std::unique_lock<std::mutex> lck(m);
-    //Add this sample into the signals map
-    //TODO FIXME The rx timestamp is not synchronized with this computer
-    // Using the current local time
-    //signals[Link{sample.physical_layer, sample.tx_id, sample.rx_id}].push_back(std::make_pair(sample.rx_timestamp, sample.rss));
-    signals[Link{sample.physical_layer, sample.tx_id, sample.rx_id}].push_back(std::make_pair(world_model::getGRAILTime(), sample.rss));
-  }
+void storeLinkRSS(SampleData& sample, map<UniqueTxer, map<Link, deque<Signal>>>& signals,
+		std::set<UniqueTxer>& seen, std::queue<std::pair<UniqueTxer, grail_time>>& last_updated, std::mutex& m) {
+	if (sample.valid) {
+		UniqueTxer ut{sample.physical_layer, sample.tx_id};
+		//Lock the mutex to gain control of the signals map
+		std::unique_lock<std::mutex> lck(m);
+		//If this transmitter is unknown then add it into the time field.
+		if ( 0 == seen.count(ut)) {
+			seen.insert(ut);
+			last_updated.push(std::make_pair(ut, world_model::getGRAILTime()));
+		}
+		//Add this sample into the signals map
+		//TODO FIXME The rx timestamp is not synchronized with this computer
+		// Using the current local time
+		//signals[Link{sample.physical_layer, sample.tx_id, sample.rx_id}].push_back(std::make_pair(sample.rx_timestamp, sample.rss));
+		signals[ut][Link{sample.physical_layer, sample.tx_id, sample.rx_id}].push_back(std::make_pair(world_model::getGRAILTime(), sample.rss));
+	}
 }
 
 ///Get the average of the doubles in a vector
@@ -152,17 +160,23 @@ int main(int ac, char** av) {
   }
 
   //Create a place to store signal values received from the aggregator
-  map<Link, deque<Signal>> signals;
+  map<UniqueTxer, map<Link, deque<Signal>>> signals;
   //We will run the aggregator connection in another thread so we
   //need a mutex to control access to the signals map.
   std::mutex signal_mutex;
+
+	//Record if a transmitter has been seen and the time of its next udpdate
+	//interval. The queue doesn't need to be sorted since things will be inserted
+	//in the order that they are seen.
+	std::set<UniqueTxer> seen;
+	std::queue<std::pair<UniqueTxer, grail_time>> last_updated;
 
   //Get all data from all physical layers (0 represents any physical layer)
   aggregator_solver::Rule everything_rule;
   everything_rule.physical_layer = 0;
   //Request data for at most twice the time interval.
   everything_rule.update_interval = time_interval / 2.0;
-  auto packet_callback = [&](SampleData& s) { storeLinkRSS(s, signals, std::ref(signal_mutex));};
+  auto packet_callback = [&](SampleData& s) { storeLinkRSS(s, signals, seen, last_updated, std::ref(signal_mutex));};
   SolverAggregator aggregator(servers, packet_callback);
   aggregator.updateRules(aggregator_solver::Subscription{everything_rule});
 
@@ -170,35 +184,49 @@ int main(int ac, char** av) {
   grail_time last_time = world_model::getGRAILTime();
   //Sleep for half a window to allow samples to arrive.
   usleep(window_size * 1000 / 2.0);
-  while (1) {
-    grail_time cur_time = world_model::getGRAILTime();
-    //Sleep if there is time until the next interval
-    if (cur_time < last_time + time_interval) {
-      grail_time interval = last_time + time_interval - cur_time;
-      //GRAIL time is in milliseconds to multiply by 1000
-      usleep(interval * 1000);
-    }
-    //Calculate the variance of all transmitters.
-    //The variance that each receiver observes is averaged to obtain the final value.
-    //A receiver must see at least 3 samples to be used in the variance calculation.
-    last_time = world_model::getGRAILTime();
-    grail_time cutoff_time = last_time - window_size;
-    //Get the variance for each transmitter/receiver link and store them by transmitter
-    map<UniqueTxer, vector<double>> txer_variances;
-    //Store link variances while doing this
-    vector<SolverWorldModel::AttrUpdate> solns;
-    {
-      std::unique_lock<std::mutex> lck(signal_mutex);
-      for (auto I = signals.begin(); I != signals.end() ; ++I) {
-        //Process all of the signals from this link
-        UniqueTxer ut{std::get<0>(I->first), std::get<1>(I->first)};
-        Link link = I->first;
-        deque<Signal>& dq = I->second;
-        //Remove data that is too old. This also stops the dequeue from growing too large
-        while (not dq.empty() and dq.front().first < cutoff_time) {
-          dq.pop_front();
-        }
-        //Find the signal statistics and store them if there are enough samples.
+	while (1) {
+		grail_time cur_time = world_model::getGRAILTime();
+		bool no_sensors = false;
+		{
+			std::unique_lock<std::mutex> lck(signal_mutex);
+			no_sensors = last_updated.empty();
+		}
+		if (no_sensors) {
+			//TODO Sleep until the next closest interval
+			//Sleep if there is time until the next interval
+			grail_time next_time = 0;
+			{
+				std::unique_lock<std::mutex> lck(signal_mutex);
+				next_time = last_updated.front().second + time_interval;
+			}
+			if (cur_time < next_time) {
+				grail_time interval = next_time - cur_time;
+				//GRAIL time is in milliseconds so multiply by 1000 for usleep
+				usleep(interval * 1000);
+			}
+
+			//Lock the signal mutex and then go ahead and process the packets from
+			//this transmitter.
+			std::unique_lock<std::mutex> lck(signal_mutex);
+			UniqueTxer ut = last_updated.front().first;
+			grail_time cutoff_time = world_model::getGRAILTime() - window_size;
+
+			//Calculate the variance of this transmitter.
+			//The variance that each receiver observes is averaged to obtain the final value.
+			//A receiver must see at least 3 samples to be used in the variance calculation.
+			//Get the variance for each transmitter/receiver link and store them by transmitter
+			map<UniqueTxer, vector<double>> txer_variances;
+			//Store link variances while doing this
+			vector<SolverWorldModel::AttrUpdate> solns;
+			for (auto I = signals[ut].begin(); I != signals[ut].end() ; ++I) {
+				//Process all of the signals from this link
+				Link link = I->first;
+				deque<Signal>& dq = I->second;
+				//Remove data that is too old. This also stops the dequeue from growing too large
+				while (not dq.empty() and dq.front().first < cutoff_time) {
+					dq.pop_front();
+				}
+				//Find the signal statistics and store them if there are enough samples.
 				//At least 1 sample to find a median and average.
 				if (1 <= dq.size()) {
 					double avg = std::accumulate(dq.begin(), dq.end(), 0.0,
@@ -234,23 +262,25 @@ int main(int ac, char** av) {
 						}
 					}
 				}
-      }
-    }
-    //Now average the variances for each transmitter and turn the values
-    //into solution types.
-    for (auto I = txer_variances.begin(); I != txer_variances.end(); ++I) {
-      UniqueTxer ut = I->first;
-      SolverWorldModel::AttrUpdate soln{u"average variance", last_time, txerToUString(ut), vector<uint8_t>()};
-      double avg = getAverage(I->second);
-      pushBackVal(avg, soln.data);
-      solns.push_back(soln);
-    }
-    //Do not create URIs for these entries, just send the data
-    if (not solns.empty()) {
-      std::cerr<<"Updating "<<solns.size()<<" attributes.\n";
-      swm.sendData(solns, false);
-    }
-  }
+			}
+			//Now average the variances for each transmitter and turn the values
+			//into solution types.
+			for (auto I = txer_variances.begin(); I != txer_variances.end(); ++I) {
+				UniqueTxer ut = I->first;
+				SolverWorldModel::AttrUpdate soln{u"average variance", last_time, txerToUString(ut), vector<uint8_t>()};
+				double avg = getAverage(I->second);
+				pushBackVal(avg, soln.data);
+				solns.push_back(soln);
+			}
+			//Do not create URIs for these entries, just send the data
+			if (not solns.empty()) {
+				std::cerr<<"Updating "<<solns.size()<<" attributes.\n";
+				swm.sendData(solns, false);
+			}
+			last_updated.pop();
+			last_updated.push(std::make_pair(ut, cutoff_time + 2*window_size));
+		}
+	}
 
   return 0;
 }
